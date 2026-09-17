@@ -29,10 +29,12 @@ it('结果分页只显示当前问题，分类内分页保持标题和全局编�
 })
 it('填空结果按原文显示提交者，不渲染回答中的 HTML', () => {
   render(<Results results={{ id: 'text', title: '结果', questions: [{
-    id: 'q', title: '留言', type: 'text', required: false, proposer: 'Admin', options: [], total_votes: 1,
+    id: 'q', title: '留言', type: 'text', required: false, description: '请勿填写个人信息。', options: [], total_votes: 1,
     responses: [{ player_id: 'Player', text: '<script>alert(1)</script>' }],
   }] }} />)
   expect(screen.getByText('填空')).toBeInTheDocument()
+  expect(screen.getByText('请勿填写个人信息。')).toHaveClass('text-muted-foreground', 'border-l-2')
+  expect(screen.queryByText('提出者')).not.toBeInTheDocument()
   expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument()
   expect(screen.getByText('Player')).toBeInTheDocument()
   expect(document.querySelector('script')).toBeNull()

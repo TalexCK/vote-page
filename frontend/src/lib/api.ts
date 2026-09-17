@@ -32,7 +32,8 @@ export interface Question {
   title: string
   type: 'single' | 'multiple' | 'text'
   required: boolean
-  proposer: string
+  description?: string | null
+  proposer?: string | null
   options: { id: string; label: string }[]
   pattern?: string | null
   hidden?: boolean

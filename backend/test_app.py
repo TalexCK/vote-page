@@ -359,6 +359,50 @@ def test_absent_conditions_preserve_stored_config(setup):
     assert stored['questions'] == poll['questions']
 
 
+def test_delete_poll_permissions_and_cleanup(setup):
+    import sqlite3
+
+    client, secret, _, poll = setup
+    endpoint = '/api/management/delete-poll'
+    body = {'poll_id': poll['id']}
+    assert client.post(endpoint, json=body).status_code == 401
+    publish(client, secret, poll)
+    assert vote(client, {'q1': ['a']}).status_code == 200
+    assert client.post(endpoint, json=body).status_code == 403
+    login(client, secret, 'Admin')
+    assert client.post('/api/management/polls', json={'config': {**poll, 'id': 'other'}}).status_code == 200
+    assert client.post(endpoint, json=body, headers={'sec-fetch-site': 'cross-site'}).status_code == 403
+    assert client.post(endpoint, content='{}').status_code == 415
+    assert client.post(endpoint, json={'poll_id': 'missing'}).status_code == 404
+    assert client.post(endpoint, json={'poll_id': 'other'}).status_code == 200
+    assert client.get('/api/poll').json()['id'] == poll['id']
+    assert client.post(endpoint, json=body).status_code == 200
+    assert client.get('/api/poll').json() is None
+    assert client.get('/api/management/polls').json() == {'active_poll_id': None, 'polls': []}
+    assert client.get('/api/management/results', params=body).status_code == 404
+    assert client.post(endpoint, json=body).status_code == 404
+    with sqlite3.connect(module.os.environ['DATABASE_PATH']) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM ballots').fetchone()[0] == 0
+    login(client, secret)
+    assert vote(client, {'q1': ['b']}).status_code == 409
+
+
+def test_question_description_without_proposer(setup):
+    client, secret, _, poll = setup
+    for question in poll['questions']:
+        question.pop('proposer')
+    poll['questions'][0]['description'] = '请阅读说明。\n支持自由文本，不限 Minecraft ID。'
+    publish(client, secret, poll)
+    loaded = client.get('/api/poll').json()
+    assert loaded['questions'][0]['description'] == poll['questions'][0]['description']
+    assert loaded['questions'][1]['description'] is None
+    login(client, secret, 'Admin')
+    assert client.get('/api/management/poll').json()['questions'] == poll['questions']
+    poll['id'] = 'too-long'
+    poll['questions'][0]['description'] = 'x' * 2001
+    assert client.post('/api/management/polls', json={'config': poll}).status_code == 422
+
+
 def text_question(**changes):
     return {'id': 'text', 'title': 'Text', 'type': 'text', 'required': False,
             'proposer': 'Admin', **changes}

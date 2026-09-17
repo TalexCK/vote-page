@@ -39,7 +39,9 @@ class Question(BaseModel):
     title: str = Field(min_length=1, max_length=2000)
     type: Literal['single', 'multiple', 'text']
     required: bool
-    proposer: str = Field(pattern=r'^[A-Za-z0-9_]{1,16}$')
+    description: str | None = Field(default=None, max_length=2000)
+    # Retain legacy configurations; new questions use description.
+    proposer: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_]{1,16}$')
     options: list[Option] = Field(default_factory=list, max_length=100)
     pattern: str | None = Field(default=None, max_length=500)
     hidden: bool = False
@@ -205,6 +207,11 @@ class PublishPoll(BaseModel):
     config: Poll
 
 
+class DeletePoll(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    poll_id: str = Field(min_length=1, max_length=100)
+
+
 class SelectPoll(BaseModel):
     model_config = ConfigDict(extra='forbid')
     poll_id: str | None
@@ -360,6 +367,17 @@ def create_app():
             else:
                 poll_by_id(conn, body.poll_id)
                 conn.execute('INSERT INTO active_poll VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET poll_id=excluded.poll_id', (body.poll_id,))
+        return {'ok': True}
+
+    @app.post('/api/management/delete-poll')
+    def delete_poll(body: DeletePoll, identity=Depends(admin)):
+        with db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM polls WHERE id=?', (body.poll_id,)).fetchone() is None:
+                raise HTTPException(404, '投票不存在')
+            conn.execute('DELETE FROM active_poll WHERE poll_id=?', (body.poll_id,))
+            conn.execute('DELETE FROM ballots WHERE poll_id=?', (body.poll_id,))
+            conn.execute('DELETE FROM polls WHERE id=?', (body.poll_id,))
         return {'ok': True}
 
     @app.post('/api/login')

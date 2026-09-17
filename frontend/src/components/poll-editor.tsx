@@ -17,6 +17,8 @@ function drafts(config?: PollConfig): Draft[] {
     const entry = structuredClone(original)
     if (isQuestion(entry)) {
       const id = uid('question'); ids.set(entry.id, id); entry.id = id
+      entry.description = entry.description ?? entry.proposer ?? ''
+      delete entry.proposer
       if (!entry.hidden) delete entry.condition
     }
     return { key: uid('entry'), entry, children: entry.type === 'category' ? visit(entry.questions) : undefined }
@@ -72,7 +74,7 @@ export function PollEditor({ initialConfig, onPublished, onUnauthorized, onCance
     else setNodes(change)
   }
   function add(type: Entry['type'], parent?: string) {
-    const entry: Entry = type === 'category' ? { type, title: '', questions: [] } : type === 'pagebreak' ? { type } : { id: uid('question'), type, title: '', proposer: '', required: false, options: type === 'text' ? [] : [{ id: uid('option'), label: '' }, { id: uid('option'), label: '' }] }
+    const entry: Entry = type === 'category' ? { type, title: '', questions: [] } : type === 'pagebreak' ? { type } : { id: uid('question'), type, title: '', description: '', required: false, options: type === 'text' ? [] : [{ id: uid('option'), label: '' }, { id: uid('option'), label: '' }] }
     listChange(parent, items => [...items, { key: uid('entry'), entry, children: type === 'category' ? [] : undefined }])
   }
   function addButtons(parent?: string) {
@@ -93,7 +95,7 @@ export function PollEditor({ initialConfig, onPublished, onUnauthorized, onCance
         </div>
         {entry.type !== 'pagebreak' && <label className="block text-xs">{entry.type === 'category' ? '分类标题' : '题目标题'}<input required className={input} value={entry.title} onChange={event => patch({ title: event.target.value })} /></label>}
         {isQuestion(entry) && <>
-          <div className="mt-4 flex flex-wrap items-end gap-5"><label className="min-w-0 flex-1 text-xs">提案人 Minecraft ID<input required pattern="[A-Za-z0-9_]{1,16}" title="1–16 位字母、数字或下划线" className={input} value={entry.proposer} onChange={event => patch({ proposer: event.target.value })} /></label><label className="flex items-center gap-2 pb-3 text-sm"><input type="checkbox" checked={entry.required} onChange={event => patch({ required: event.target.checked })} />必答</label></div>
+          <div className="mt-4 flex flex-wrap items-end gap-5"><label className="min-w-0 flex-1 text-xs">Description<textarea rows={2} maxLength={2000} className={`${input} resize-y`} value={entry.description ?? ''} onChange={event => patch({ description: event.target.value })} /></label><label className="flex items-center gap-2 pb-3 text-sm"><input type="checkbox" checked={entry.required} onChange={event => patch({ required: event.target.checked })} />必答</label></div>
           {entry.type === 'text' ? <label className="mt-4 block text-xs">格式规则（正则表达式，可选）<input maxLength={500} className={`${input} font-mono`} value={entry.pattern ?? ''} onChange={event => patch({ pattern: event.target.value || null })} /><span className="mt-2 block leading-5 text-muted-foreground">完整匹配答案，留空不限制格式。</span></label> : <div className="mt-5 space-y-2">
             {entry.options.map((option, optionIndex) => <div key={option.id} className="flex items-end gap-2"><label className="min-w-0 flex-1 text-xs">选项 {optionIndex + 1}<input required className={input} value={option.label} onChange={event => patch({ options: entry.options.map(item => item.id === option.id ? { ...item, label: event.target.value } : item) })} /></label><Button type="button" variant="ghost" size="sm" aria-label={`删除选项 ${optionIndex + 1}`} onClick={() => patch({ options: entry.options.filter(item => item.id !== option.id) })}>移除</Button></div>)}
             <Button type="button" variant="ghost" size="sm" onClick={() => patch({ options: [...entry.options, { id: uid('option'), label: '' }] })}>＋ 添加选项</Button>

@@ -38,6 +38,7 @@ docker run -d --name mua-vote --restart unless-stopped \
 - 分类、分页和隐藏题的条件通过题目下拉框与选项标签勾选配置。
 - 可以创建多个投票。**创建不会自动替换主页投票**；通过页面顶部的「主页投票」选择框指定主页显示哪一个，也可停用展示。起止时间仍独立控制是否开放。
 - 已创建投票保留原始题目和答案，可查看各投票结果、复制为新投票。为避免已有答案与修改后的题目混淆，不原地修改已创建配置。
+- 投票列表支持删除；确认后永久删除投票及全部选票。删除当前首页投票会同时停止展示，不自动切换到其他投票。
 - 切换或停用不删除已有数据；切回同一投票仍使用原有答案及修改冷却时间。尚未选择主页投票时，玩家看到「暂无投票」。
 - 配置、主页选择与答案均保存在 SQLite；已有数据库无需手动迁移。
 
@@ -57,7 +58,7 @@ docker run -d --name mua-vote --restart unless-stopped \
       "title": "选择一个方案",
       "type": "single",
       "required": true,
-      "proposer": "PlayerOne",
+      "description": "请选择你支持的方案。",
       "options": [
         {"id": "a", "label": "方案 A"},
         {"id": "b", "label": "方案 B"}
@@ -127,7 +128,7 @@ docker run -d --name mua-vote --restart unless-stopped \
 - 填空题使用空 `options`，可设置 `pattern`（最多 500 字符），如 `[0-9]{4}`。服务器使用 Python 兼容正则进行**整段匹配**，不是搜索子串；格式错误或匹配超时会拒绝提交。单次匹配限时 20ms，答案最多 2000 字符，纯空白按未填写处理。填空结果展示原文及提交者。
 - `hidden: true` 表示默认隐藏。可额外设置 `condition`（与分类条件格式相同），选中前面题目的任一指定标签才显示；没有条件则始终隐藏。`hidden: false` 或省略时始终显示。
 - 隐藏题不校验必填，也不保留答案。条件只能引用前面的单选或多选题，不能引用填空题；被隐藏/跳过的来源题视为未作答。
-- `proposer` 为提出者的 MUA Minecraft ID，始终展示。
+- `description` 为可选题目说明，最多 2000 字符，支持换行，在题目下方以浅色注释显示。旧配置的 `proposer` 仍兼容，并作为说明显示；复制新建时自动转换。
 - 时间必须包含时区，开始时间含边界、结束时间不含边界；以服务器时间为准。
 - 题目 ID 在投票内唯一，选项 ID 在题目内唯一。
 - 选择只保存在页面中，只有点击提交才写入数据库。首次提交及每次修改提交成功后，须等待满 10 分钟才能再次修改；投票结束后不可修改，以服务器时间为准。
@@ -145,6 +146,7 @@ docker run -d --name mua-vote --restart unless-stopped \
 | `GET /api/management/polls` | 列出所有投票及 `active_poll_id` |
 | `POST /api/management/polls` | `{config: ...}` 创建投票，不切换主页 |
 | `GET /api/management/poll?poll_id=...` | 读取原始配置，用于复制；查询参数须 URL 编码 |
+| `POST /api/management/delete-poll` | `{poll_id: "..."}` 永久删除投票和选票 |
 | `POST /api/management/active-poll` | `{poll_id: "..."}` 切换主页；`null` 停用 |
 | `GET /api/management/results?poll_id=...` | 查看指定投票结果，无需先切换主页 |
 

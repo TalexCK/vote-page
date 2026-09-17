@@ -3,6 +3,7 @@ import { api, ApiError, type Results as ResultsData } from '@/lib/api'
 import { PollEditor, type PollConfig } from './poll-editor'
 import { Results } from './results'
 import { Button } from './ui/button'
+import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from './ui/alert-dialog'
 
 interface PollSummary { id: string; title: string; starts_at: string; ends_at: string; question_count: number; ballot_count: number }
 interface Inventory { active_poll_id: string | null; polls: PollSummary[] }
@@ -12,6 +13,7 @@ export function Management({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [inventory, setInventory] = useState<Inventory | null>(null)
   const [editor, setEditor] = useState<{ config?: PollConfig; key: number } | null>(null)
   const [results, setResults] = useState<ResultsData | null>(null)
+  const [deleting, setDeleting] = useState<PollSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -59,12 +61,35 @@ export function Management({ onUnauthorized }: { onUnauthorized: () => void }) {
       </section>
       <section aria-labelledby="archive-heading"><div className="mb-4 flex flex-wrap items-center justify-between gap-4"><h2 id="archive-heading" className="text-lg font-medium">投票列表 <span className="ml-2 font-mono text-xs text-muted-foreground">{String(inventory.polls.length).padStart(2, '0')}</span></h2><Button disabled={busy || loading || !!editor} onClick={() => { setEditor({ key: Date.now() }); setResults(null) }}>＋ 新建投票</Button></div>
         <div className="divide-y border-y">{inventory.polls.map((poll, index) => <article key={poll.id} className="flex flex-wrap items-center justify-between gap-5 py-6"><div className="flex min-w-0 gap-4"><span className="pt-1 font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, '0')}</span><div className="min-w-0"><h3 className="break-words text-base font-medium">{poll.title}{inventory.active_poll_id === poll.id && <span className="ml-3 inline-block border px-2 py-0.5 align-middle text-[10px] font-normal tracking-wider">首页展示</span>}</h3><p className="mt-2 text-xs leading-6 text-muted-foreground">{date(poll.starts_at)} — {date(poll.ends_at)}</p><p className="mt-1 text-xs text-muted-foreground">{poll.question_count} 道题目 <span className="mx-2">/</span> {poll.ballot_count} 份选票</p></div></div>
-          <div className="flex gap-2"><Button variant="ghost" size="sm" disabled={busy || loading || !!editor} aria-label={`查看${poll.title}结果`} onClick={() => void action(async signal => { const data = await api<ResultsData>(`/management/results?poll_id=${encodeURIComponent(poll.id)}`, { signal }); if (!signal.aborted) setResults(data) })}>查看结果 ↗</Button><Button variant="outline" size="sm" disabled={busy || loading || !!editor} aria-label={`复制${poll.title}`} onClick={() => void action(async signal => { const config = await api<PollConfig>(`/management/poll?poll_id=${encodeURIComponent(poll.id)}`, { signal }); if (!signal.aborted) { setEditor({ config, key: Date.now() }); setResults(null) } })}>复制新建</Button></div>
+          <div className="flex gap-2"><Button variant="ghost" size="sm" disabled={busy || loading || !!editor} aria-label={`查看${poll.title}结果`} onClick={() => void action(async signal => { const data = await api<ResultsData>(`/management/results?poll_id=${encodeURIComponent(poll.id)}`, { signal }); if (!signal.aborted) setResults(data) })}>查看结果 ↗</Button><Button variant="outline" size="sm" disabled={busy || loading || !!editor} aria-label={`复制${poll.title}`} onClick={() => void action(async signal => { const config = await api<PollConfig>(`/management/poll?poll_id=${encodeURIComponent(poll.id)}`, { signal }); if (!signal.aborted) { setEditor({ config, key: Date.now() }); setResults(null) } })}>复制新建</Button><Button variant="ghost" size="sm" disabled={busy || loading || !!editor} aria-label={`删除${poll.title}`} onClick={() => { setError(''); setDeleting(poll) }}>删除</Button></div>
         </article>)}{!inventory.polls.length && <p className="py-12 text-center text-sm text-muted-foreground">暂无投票</p>}</div>
       </section>
     </>}
     {busy && <p role="status" className="mt-4 text-xs text-muted-foreground">正在处理…</p>}
     {editor && <PollEditor key={editor.key} initialConfig={editor.config} onUnauthorized={onUnauthorized} onCancel={() => setEditor(null)} onPublished={() => { setEditor(null); setNotice('已创建，请在顶部选择首页投票。'); setRevision(value => value + 1) }} />}
     {results && <section className="mt-12" aria-labelledby="results-heading"><div className="mb-6 flex items-center justify-between gap-4"><div><p className="mb-2 text-xs text-muted-foreground">投票结果</p><h2 id="results-heading" className="text-2xl font-medium">{results.title}</h2></div><Button variant="ghost" size="sm" onClick={() => setResults(null)}>收起结果</Button></div><Results key={results.id} results={results} /></section>}
+    <AlertDialog open={!!deleting} onOpenChange={open => { if (!open && !busy) setDeleting(null) }}>
+      <AlertDialogContent>
+        <AlertDialogTitle>删除「{deleting?.title}」？</AlertDialogTitle>
+        <AlertDialogDescription>投票及其全部选票将永久删除，无法恢复。{deleting?.id === inventory?.active_poll_id ? '首页将停止展示此投票。' : ''}</AlertDialogDescription>
+        {error && <p role="alert" className="text-sm">{error}</p>}
+        <div className="mt-6 flex justify-end gap-3">
+          <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
+          <AlertDialogAction disabled={busy} onClick={event => {
+            event.preventDefault()
+            if (!deleting) return
+            const id = deleting.id
+            void action(async signal => {
+              await api('/management/delete-poll', { method: 'POST', body: JSON.stringify({ poll_id: id }), signal })
+              if (signal.aborted) return
+              setInventory(previous => previous ? { ...previous, active_poll_id: previous.active_poll_id === id ? null : previous.active_poll_id, polls: previous.polls.filter(poll => poll.id !== id) } : previous)
+              setResults(previous => previous?.id === id ? null : previous)
+              setDeleting(null)
+              setNotice('已删除投票')
+            })
+          }}>{busy ? '删除中…' : '确认删除'}</AlertDialogAction>
+        </div>
+      </AlertDialogContent>
+    </AlertDialog>
   </main>
 }

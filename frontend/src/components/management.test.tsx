@@ -32,6 +32,25 @@ it('loads a copy and results from their specific archive endpoints', async () =>
   expect(await screen.findByLabelText('投票标题')).toHaveValue('第一期 · 副本')
   expect(mockApi).toHaveBeenLastCalledWith('/management/poll?poll_id=one', expect.anything())
 })
+it('confirms deletion, cancels safely, and clears the active poll and its results', async () => {
+  mockApi.mockImplementation(async path => path === '/management/polls' ? inventory : path.startsWith('/management/results?') ? { id: 'one', title: '第一期', questions: [] } : {})
+  const user = userEvent.setup()
+  render(<Management onUnauthorized={vi.fn()} />)
+  await user.click(await screen.findByRole('button', { name: '查看第一期结果' }))
+  await user.click(screen.getByRole('button', { name: '删除第一期' }))
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('无法恢复')
+  expect(mockApi.mock.calls.some(([path]) => path === '/management/delete-poll')).toBe(false)
+  await user.click(screen.getByRole('button', { name: '取消' }))
+  expect(screen.getByRole('button', { name: '删除第一期' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '删除第一期' }))
+  await user.click(screen.getByRole('button', { name: '确认删除' }))
+  expect(mockApi).toHaveBeenLastCalledWith('/management/delete-poll', expect.objectContaining({ method: 'POST', body: JSON.stringify({ poll_id: 'one' }) }))
+  expect(screen.queryByRole('button', { name: '删除第一期' })).not.toBeInTheDocument()
+  expect(screen.getByRole('combobox')).toHaveValue('')
+  expect(screen.queryByText('暂无题目')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '删除第二期' })).toBeInTheDocument()
+})
+
 it('aborts pending operations when unmounted', async () => {
   let finish!: (value: unknown) => void
   mockApi.mockImplementation(async path => path === '/management/polls' ? inventory : new Promise(resolve => { finish = resolve }))

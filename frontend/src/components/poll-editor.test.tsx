@@ -20,7 +20,7 @@ it('visually creates a category with text and a pagebreak without activating it'
   const category = within(screen.getByRole('region', { name: '建议编辑' }))
   await user.click(category.getByRole('button', { name: '＋ 填空题' }))
   await user.type(screen.getByLabelText('题目标题'), '你的建议')
-  await user.type(screen.getByLabelText('提案人 Minecraft ID'), 'Admin')
+  await user.type(screen.getByLabelText('Description'), '请填写建议，可换行。')
   await user.click(category.getByRole('button', { name: '＋ 分页' }))
   await user.click(screen.getByRole('button', { name: '创建投票' }))
   expect(published).toHaveBeenCalledOnce()
@@ -28,9 +28,9 @@ it('visually creates a category with text and a pagebreak without activating it'
   const [path, options] = mockApi.mock.calls[0]
   expect(path).toBe('/management/polls')
   const body = JSON.parse(options!.body as string).config
-  expect(body.questions[0]).toMatchObject({ type: 'category', title: '建议', questions: [{ type: 'text', title: '你的建议', options: [] }, { type: 'pagebreak' }] })
+  expect(body.questions[0]).toMatchObject({ type: 'category', title: '建议', questions: [{ type: 'text', title: '你的建议', description: '请填写建议，可换行。', options: [] }, { type: 'pagebreak' }] })
   expect(JSON.stringify(body)).not.toContain('"key"')
-  expect(document.querySelector('textarea')).toBeNull()
+  expect(screen.queryByLabelText('投票 JSON')).not.toBeInTheDocument()
 })
 it('copies with fresh IDs and remapped conditions, and rejects dangling references', async () => {
   const user = userEvent.setup()
@@ -40,6 +40,8 @@ it('copies with fresh IDs and remapped conditions, and rejects dangling referenc
   const copy = JSON.parse(mockApi.mock.calls[0][1]!.body as string).config
   expect(copy.id).not.toBe(config.id)
   expect(copy.questions[0].id).not.toBe('q1')
+  expect(copy.questions[0].description).toBe('Admin')
+  expect(copy.questions[0]).not.toHaveProperty('proposer')
   expect(copy.questions[1].condition.question_id).toBe(copy.questions[0].id)
   view.unmount()
   mockApi.mockClear()
