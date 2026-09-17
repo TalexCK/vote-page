@@ -7,7 +7,7 @@ import { api, ApiError, type Poll } from '@/lib/api'
 vi.mock('@/lib/api', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/api')>(), api: vi.fn() }))
 const mockApi = vi.mocked(api)
 const unauthorized = vi.fn()
-const poll: Poll = { id: 'one', title: '本次投票', starts_at: '2026-01-01T00:00:00Z', ends_at: '2026-12-01T00:00:00Z', status: 'open', submitted: false, questions: [{ id: 'q', title: '选择', type: 'single', required: true, proposer: '', options: [{ id: 'a', label: '选项 A' }] }] }
+const poll: Poll = { id: 'one', title: '本次投票', starts_at: '2026-01-01T00:00:00Z', ends_at: '2026-12-01T00:00:00Z', status: 'open', submitted: false, answers: {}, submitted_at: null, editable_at: null, can_edit: false, server_time: '2026-01-01T00:00:00Z', questions: [{ id: 'q', title: '选择', type: 'single', required: true, proposer: '', options: [{ id: 'a', label: '选项 A' }] }] }
 const config = { id: poll.id, title: poll.title, starts_at: poll.starts_at, ends_at: poll.ends_at, questions: poll.questions }
 const results = { id: 'one', title: poll.title, questions: [] }
 beforeEach(() => { mockApi.mockReset() })
@@ -23,7 +23,7 @@ describe('投票页面', () => {
   })
   it('提交绑定 poll_id，投票结束自动显示结果', async () => {
     let current = poll
-    mockApi.mockImplementation(async path => path === '/poll' ? current : path === '/results' ? results : { ok: true })
+    mockApi.mockImplementation(async path => path === '/poll' ? current : path === '/results' ? results : { ok: true, submitted_at: '2026-01-01T00:00:00Z', editable_at: '2026-01-01T00:10:00Z' })
     mount()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('radio'))

@@ -39,6 +39,11 @@ export interface Poll {
   ends_at: string
   status: 'pending' | 'open' | 'ended'
   submitted: boolean
+  answers: Answers
+  submitted_at: string | null
+  editable_at: string | null
+  can_edit: boolean
+  server_time: string
   questions: Question[]
 }
 export interface Results {
@@ -50,6 +55,7 @@ export interface Results {
   })[]
 }
 export type Answers = Record<string, string[]>
+export interface VoteResponse { ok: true; submitted_at: string; editable_at: string }
 
 export function validAnswers(questions: Question[], answers: Answers): Answers {
   return Object.fromEntries(questions.map(question => {

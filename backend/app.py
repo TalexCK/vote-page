@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -153,8 +153,8 @@ def create_app():
         row = conn.execute('SELECT config FROM polls JOIN active_poll ON polls.id=active_poll.poll_id WHERE singleton=1').fetchone()
         return Poll.model_validate_json(row['config']) if row else None
 
-    def status(poll):
-        current = now()
+    def status(poll, current=None):
+        current = current or now()
         return 'pending' if current < poll.starts_at else 'ended' if current >= poll.ends_at else 'open'
 
     @app.get('/api/management/poll')
@@ -211,37 +211,50 @@ def create_app():
             poll = load_poll(conn)
             if poll is None:
                 return None
-            submitted = conn.execute('SELECT 1 FROM ballots WHERE poll_id=? AND player_key=?',
-                                     (poll.id, identity['minecraft_id'].lower())).fetchone() is not None
-        return {**poll.model_dump(mode='json'), 'status': status(poll), 'submitted': submitted}
+            ballot = conn.execute('SELECT answers, submitted_at FROM ballots WHERE poll_id=? AND player_key=?',
+                                  (poll.id, identity['minecraft_id'].lower())).fetchone()
+        current = now()
+        phase = status(poll, current)
+        editable_at = datetime.fromisoformat(ballot['submitted_at']) + timedelta(minutes=10) if ballot else None
+        return {**poll.model_dump(mode='json'), 'status': phase, 'submitted': ballot is not None,
+                'answers': json.loads(ballot['answers']) if ballot else {},
+                'submitted_at': ballot['submitted_at'] if ballot else None,
+                'editable_at': editable_at.isoformat() if editable_at else None,
+                'can_edit': editable_at is not None and current >= editable_at and phase == 'open',
+                'server_time': current.isoformat()}
 
     @app.post('/api/vote')
     def vote(body: Ballot, identity=Depends(user)):
-        try:
-            with db() as conn:
-                conn.execute('BEGIN IMMEDIATE')
-                poll = load_poll(conn)
-                if poll is None or poll.id != body.poll_id:
-                    raise HTTPException(409, '投票已更新，请刷新页面')
-                phase = status(poll)
-                if phase != 'open':
-                    raise HTTPException(403, '投票未开始' if phase == 'pending' else '投票已结束')
-                if body.answers.keys() - {q.id for q in poll.questions}:
-                    raise HTTPException(422, '题目无效')
-                answers = {}
-                for question in poll.questions:
-                    chosen = body.answers.get(question.id, [])
-                    if (question.required and not chosen) or (question.type == 'single' and len(chosen) > 1):
-                        raise HTTPException(422, '请完成必填题并检查选择数量')
-                    if len(set(chosen)) != len(chosen) or set(chosen) - {o.id for o in question.options}:
-                        raise HTTPException(422, '选项无效')
-                    answers[question.id] = chosen
-                conn.execute('INSERT INTO ballots VALUES (?, ?, ?, ?, ?)', (
-                    poll.id, identity['minecraft_id'].lower(), identity['minecraft_id'],
-                    json.dumps(answers), now().isoformat()))
-        except sqlite3.IntegrityError:
-            raise HTTPException(409, '已提交')
-        return {'ok': True}
+        with db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            poll = load_poll(conn)
+            if poll is None or poll.id != body.poll_id:
+                raise HTTPException(409, '投票已更新，请刷新页面')
+            current = now()
+            phase = status(poll, current)
+            if phase != 'open':
+                raise HTTPException(403, '投票未开始' if phase == 'pending' else '投票已结束')
+            player_key = identity['minecraft_id'].lower()
+            previous = conn.execute('SELECT submitted_at FROM ballots WHERE poll_id=? AND player_key=?',
+                                    (poll.id, player_key)).fetchone()
+            if previous and current < datetime.fromisoformat(previous['submitted_at']) + timedelta(minutes=10):
+                raise HTTPException(409, '每次提交后需等待 10 分钟才能修改')
+            if body.answers.keys() - {q.id for q in poll.questions}:
+                raise HTTPException(422, '题目无效')
+            answers = {}
+            for question in poll.questions:
+                chosen = body.answers.get(question.id, [])
+                if (question.required and not chosen) or (question.type == 'single' and len(chosen) > 1):
+                    raise HTTPException(422, '请完成必填题并检查选择数量')
+                if len(set(chosen)) != len(chosen) or set(chosen) - {o.id for o in question.options}:
+                    raise HTTPException(422, '选项无效')
+                answers[question.id] = chosen
+            conn.execute('''INSERT INTO ballots VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(poll_id, player_key) DO UPDATE SET
+                            answers=excluded.answers, submitted_at=excluded.submitted_at''', (
+                poll.id, player_key, identity['minecraft_id'], json.dumps(answers), current.isoformat()))
+        return {'ok': True, 'submitted_at': current.isoformat(),
+                'editable_at': (current + timedelta(minutes=10)).isoformat()}
 
     @app.get('/api/results')
     def results(identity=Depends(user)):

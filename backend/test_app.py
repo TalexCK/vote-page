@@ -133,6 +133,62 @@ def test_schedule_and_atomic_submission(setup, monkeypatch):
         assert other.get('/api/poll').json()['submitted'] is True
 
 
+def test_edit_cooldown_replaces_answers_and_preserves_privacy(setup, monkeypatch):
+    client, secret, current, poll = setup
+    publish(client, secret, poll)
+    monkeypatch.setattr(module, 'now', lambda: current)
+    initial = client.get('/api/poll').json()
+    assert initial['answers'] == {} and initial['editable_at'] is None
+    assert initial['can_edit'] is False
+    response = vote(client, {'q1': ['a'], 'q2': ['c']}).json()
+    assert response['editable_at'] == (current + timedelta(minutes=10)).isoformat()
+    saved = client.get('/api/poll').json()
+    assert saved['answers'] == {'q1': ['a'], 'q2': ['c']}
+    assert saved['can_edit'] is False
+    monkeypatch.setattr(module, 'now', lambda: current + timedelta(minutes=10, microseconds=-1))
+    assert vote(client, {'q1': ['b']}).status_code == 409
+    monkeypatch.setattr(module, 'now', lambda: current + timedelta(minutes=10))
+    assert client.get('/api/poll').json()['can_edit'] is True
+    # A failed edit must not reset the cooldown or erase previous answers.
+    assert vote(client, {}).status_code == 422
+    assert client.get('/api/poll').json()['answers'] == saved['answers']
+    assert client.get('/api/poll').json()['can_edit'] is True
+    assert vote(client, {'q1': ['b']}).status_code == 200
+    assert client.get('/api/poll').json()['answers'] == {'q1': ['b'], 'q2': []}
+    assert client.get('/api/poll').json()['can_edit'] is False
+    assert vote(client, {'q1': ['a']}).status_code == 409
+    login(client, secret, 'Admin')
+    assert client.get('/api/poll').json()['answers'] == {}
+    results = client.get('/api/results').json()['questions']
+    assert results[0]['total_votes'] == 1
+    assert results[0]['options'][0]['voters'] == []
+    assert results[0]['options'][1]['voters'] == ['Player']
+    assert results[1]['total_votes'] == 0
+    login(client, secret)
+    monkeypatch.setattr(module, 'now', lambda: current + timedelta(minutes=20))
+    assert client.get('/api/poll').json()['can_edit'] is True
+    assert vote(client, {'q1': ['a']}).status_code == 200
+    monkeypatch.setattr(module, 'now', lambda: current + timedelta(hours=1))
+    assert client.get('/api/poll').json()['can_edit'] is False
+    assert vote(client, {'q1': ['b']}).status_code == 403
+
+
+def test_concurrent_edits_and_restart_keep_cooldown(setup, monkeypatch):
+    client, secret, current, poll = setup
+    publish(client, secret, poll)
+    monkeypatch.setattr(module, 'now', lambda: current)
+    assert vote(client, {'q1': ['a']}).status_code == 200
+    monkeypatch.setattr(module, 'now', lambda: current + timedelta(minutes=10))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(lambda _: vote(client, {'q1': ['b']}).status_code, range(2)))
+    assert sorted(statuses) == [200, 409]
+    with TestClient(module.create_app()) as other:
+        login(other, secret, 'player')
+        assert other.get('/api/poll').json()['answers'] == {'q1': ['b'], 'q2': []}
+        assert other.get('/api/poll').json()['can_edit'] is False
+        assert vote(other, {'q1': ['a']}).status_code == 409
+
+
 def test_login_rate_limit_and_csrf(setup):
     client, _, _, _ = setup
     assert client.post('/api/login', data={'minecraft_id': 'Player', 'secret': 'bad'}).status_code == 415
