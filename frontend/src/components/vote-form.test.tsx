@@ -98,6 +98,75 @@ it('分页保留选择，全局必填漏选跳回对应页，统一提交所有�
   expect(mockApi).toHaveBeenCalledWith('/vote', expect.objectContaining({ body: JSON.stringify({ poll_id: 'one', answers: { q: ['b'], q2: ['c'] } }) }))
 })
 
+it('条件分页拦截两个翻页入口，分类跳过后清除旧答案且不校验隐藏必填题', async () => {
+  const user = userEvent.setup()
+  const condition = { question_id: 'q', option_labels: ['A'] }
+  const value: Poll = {
+    ...paged,
+    questions: [...paged.questions, { ...paged.questions[1], id: 'q3', title: '最后一题', required: false }],
+    pages: [
+      { title: null, question_ids: ['q'], exit_gates: [{ question_id: 'q', option_labels: ['A', 'B'] }] },
+      { title: '条件分类', question_ids: ['q2'], condition },
+      { title: '最后一页', question_ids: ['q3'] },
+    ],
+  }
+  render(form(value))
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('A、B')
+  await user.click(screen.getByRole('button', { name: '继续下一页' }))
+  expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'A' }))
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.getByText('条件分类')).toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'C' }))
+  await user.click(screen.getByRole('button', { name: '上一页' }))
+  await user.click(screen.getByRole('radio', { name: 'B' }))
+  await user.click(screen.getByRole('radio', { name: 'A' }))
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.getByRole('radio', { name: 'C' })).toHaveAttribute('aria-checked', 'false')
+  await user.click(screen.getByRole('button', { name: '上一页' }))
+  await user.click(screen.getByRole('radio', { name: 'B' }))
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.getByText('最后一页')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '提交全部' }))
+  mockApi.mockResolvedValue({ ok: true, submitted_at: poll.submitted_at, editable_at: poll.editable_at })
+  await user.click(screen.getByRole('button', { name: '确认提交' }))
+  expect(mockApi).toHaveBeenCalledWith('/vote', expect.objectContaining({ body: JSON.stringify({ poll_id: 'one', answers: { q: ['b'], q3: [] } }) }))
+})
+
+it('条件填空题随选择显示，必填与服务端格式校验生效，隐藏时清除答案', async () => {
+  const user = userEvent.setup()
+  const value: Poll = {
+    ...paged,
+    questions: [paged.questions[0], {
+      id: 'text', title: '联系编号', type: 'text', options: [], required: true, proposer: 'Player',
+      hidden: true, condition: { question_id: 'q', option_labels: ['A'] }, pattern: '[0-9]{4}',
+    }],
+    pages: [{ title: null, question_ids: ['q', 'text'] }],
+  }
+  render(form(value))
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'A' }))
+  await user.click(screen.getByRole('button', { name: '提交全部' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('联系编号')
+  const input = screen.getByRole('textbox', { name: '联系编号' })
+  await user.type(input, 'bad')
+  mockApi.mockRejectedValueOnce(new ApiError('联系编号：填写内容不符合格式', 422))
+  await user.click(screen.getByRole('button', { name: '提交全部' }))
+  await user.click(screen.getByRole('button', { name: '确认提交' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('填写内容不符合格式')
+  expect(input).toHaveValue('bad')
+  await user.click(screen.getByRole('radio', { name: 'B' }))
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'A' }))
+  expect(screen.getByRole('textbox')).toHaveValue('')
+  await user.type(screen.getByRole('textbox'), '1234')
+  mockApi.mockResolvedValue({ ok: true, submitted_at: poll.submitted_at, editable_at: poll.editable_at })
+  await user.click(screen.getByRole('button', { name: '提交全部' }))
+  await user.click(screen.getByRole('button', { name: '确认提交' }))
+  expect(mockApi).toHaveBeenLastCalledWith('/vote', expect.objectContaining({ body: JSON.stringify({ poll_id: 'one', answers: { q: ['a'], text: ['1234'] } }) }))
+})
+
 it('修改回填所有页，新投票 key 重置页和答案', async () => {
   const user = userEvent.setup()
   const value = { ...paged, submitted: true, submitted_at: poll.submitted_at, can_edit: true, answers: { q: ['b'], q2: ['c'] } }

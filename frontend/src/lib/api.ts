@@ -16,7 +16,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new ApiError(typeof body?.detail === 'string' ? body.detail : '请求失败，请重试', response.status)
+    const detail = typeof body?.detail === 'string' ? body.detail : Array.isArray(body?.detail)
+      ? body.detail.map((issue: { loc?: (string | number)[]; msg?: string }) => `${issue.loc?.filter(part => part !== 'body' && part !== 'config').join(' / ') ?? ''}：${issue.msg ?? '配置无效'}`).join('；')
+      : '请求失败，请重试'
+    throw new ApiError(detail, response.status)
   }
   if (response.status === 204) return undefined as T
   const text = await response.text()
@@ -27,12 +30,22 @@ export interface User { minecraft_id: string; is_admin: boolean }
 export interface Question {
   id: string
   title: string
-  type: 'single' | 'multiple'
+  type: 'single' | 'multiple' | 'text'
   required: boolean
   proposer: string
   options: { id: string; label: string }[]
+  pattern?: string | null
+  hidden?: boolean
+  condition?: Condition | null
 }
-export interface PollPage { title: string | null; question_ids: string[] }
+export interface Condition { question_id: string; option_labels: string[] }
+export interface PollPage {
+  title: string | null
+  question_ids: string[]
+  condition?: Condition
+  gates?: Condition[]
+  exit_gates?: Condition[]
+}
 export interface Poll {
   id: string
   title: string
@@ -54,6 +67,7 @@ export interface Results {
   pages?: PollPage[]
   questions: (Omit<Question, 'options'> & {
     total_votes: number
+    responses?: { player_id: string; text: string }[]
     options: { id: string; label: string; count: number; voters: string[] }[]
   })[]
 }
@@ -62,6 +76,10 @@ export interface VoteResponse { ok: true; submitted_at: string; editable_at: str
 
 export function validAnswers(questions: Question[], answers: Answers): Answers {
   return Object.fromEntries(questions.map(question => {
+    if (question.type === 'text') {
+      const value = answers[question.id]?.[0] ?? ''
+      return [question.id, value.trim() ? [value] : []]
+    }
     const selected = (answers[question.id] ?? []).filter(id => question.options.some(option => option.id === id))
     return [question.id, question.type === 'single' ? selected.slice(0, 1) : selected]
   }))

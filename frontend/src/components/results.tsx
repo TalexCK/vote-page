@@ -5,7 +5,9 @@ import type { Results as ResultsData } from '@/lib/api'
 import { QuestionHeading } from './question-heading'
 
 export function Results({ results }: { results: ResultsData }) {
-  const pages = questionPages(results.questions, results.pages)
+  const layout = questionPages(results.questions, results.pages)
+  const nonempty = layout.filter(page => page.question_ids.length)
+  const pages = nonempty.length ? nonempty : layout
   const [page, setPage] = useState(0)
   const current = Math.min(page, pages.length - 1)
   return <>
@@ -15,7 +17,12 @@ export function Results({ results }: { results: ResultsData }) {
       <QuestionHeading question={question} index={index} />
       <div className="sm:ml-10">
         <p className="mb-5 text-xs text-muted-foreground">本题总票数 <span className="ml-2 font-mono text-base text-foreground">{question.total_votes}</span></p>
-        <div className="space-y-6">
+        {question.type === 'text' ? <div className="divide-y border-y">
+          {question.responses?.length ? question.responses.map(response => <div key={response.player_id} className="py-4">
+            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{response.text}</p>
+            <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{response.player_id}</p>
+          </div>) : <p className="py-4 text-xs text-muted-foreground">暂无回答</p>}
+        </div> : <div className="space-y-6">
           {question.options.map(option => {
             const max = Math.max(1, ...question.options.map(item => item.count))
             return <div key={option.id}>
@@ -26,7 +33,7 @@ export function Results({ results }: { results: ResultsData }) {
               </div>
             </div>
           })}
-        </div>
+        </div>}
       </div>
     </section>)}
     {!results.questions.length && <p className="py-12 text-sm text-muted-foreground">暂无题目</p>}

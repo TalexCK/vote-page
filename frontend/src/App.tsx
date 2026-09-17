@@ -4,6 +4,7 @@ import { api, ApiError, type User } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Login } from '@/components/login'
 import { PollPage } from '@/components/poll-page'
+import { Management } from '@/components/management'
 
 export default function App() {
   const management = window.location.pathname.replace(/\/+$/, '') === '/management'
@@ -43,7 +44,7 @@ export default function App() {
     </header>
     <div id="main-content" className="flex flex-1 flex-col" tabIndex={-1}>
       {error && <div role="alert" className="mx-auto mt-8 flex w-full max-w-3xl items-center justify-between gap-4 px-6 text-sm"><span>{error}</span>{!user && <Button variant="outline" size="sm" onClick={() => setRevision(value => value + 1)}>重试</Button>}</div>}
-      {loading ? <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-20"><p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />加载中</p></main> : !user ? !error && <Login onLogin={setUser} /> : management && !user.is_admin ? <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-20"><h1 className="mb-6 font-display text-3xl">仅管理员可访问</h1><Button asChild variant="outline"><a href="/">返回投票<ArrowUpRight /></a></Button></main> : <PollPage management={management} onUnauthorized={unauthorized} />}
+      {loading ? <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-20"><p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />加载中</p></main> : !user ? !error && <Login onLogin={setUser} /> : management && !user.is_admin ? <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-20"><h1 className="mb-6 font-display text-3xl">仅管理员可访问</h1><Button asChild variant="outline"><a href="/">返回投票<ArrowUpRight /></a></Button></main> : management ? <Management onUnauthorized={unauthorized} /> : <PollPage onUnauthorized={unauthorized} />}
     </div>
   </div>
 }

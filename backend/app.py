@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import jwt
+import regex
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -21,16 +22,42 @@ class Option(BaseModel):
     label: str = Field(min_length=1, max_length=1000)
 
 
+class Condition(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    question_id: str = Field(min_length=1)
+    option_labels: list[str] = Field(min_length=1)
+
+    @model_validator(mode='after')
+    def unique_labels(self):
+        if len(set(self.option_labels)) != len(self.option_labels):
+            raise ValueError('Duplicate condition labels')
+        return self
+
+
 class Question(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=2000)
-    type: Literal['single', 'multiple']
+    type: Literal['single', 'multiple', 'text']
     required: bool
     proposer: str = Field(pattern=r'^[A-Za-z0-9_]{1,16}$')
-    options: list[Option] = Field(min_length=2, max_length=100)
+    options: list[Option] = Field(default_factory=list, max_length=100)
+    pattern: str | None = Field(default=None, max_length=500)
+    hidden: bool = False
+    condition: Condition | None = None
 
     @model_validator(mode='after')
     def unique_options(self):
+        if self.type == 'text':
+            if self.options:
+                raise ValueError('Text questions cannot have options')
+        elif len(self.options) < 2:
+            raise ValueError('Choice questions need at least two options')
+        if self.pattern is not None:
+            try:
+                re.compile(self.pattern)
+                regex.compile(self.pattern)
+            except (re.error, regex.error, OverflowError, RecursionError):
+                raise ValueError('Invalid regular expression')
         if len({o.id for o in self.options}) != len(self.options):
             raise ValueError('Duplicate option IDs')
         return self
@@ -39,6 +66,7 @@ class Question(BaseModel):
 class PageBreak(BaseModel):
     model_config = ConfigDict(extra='forbid')
     type: Literal['pagebreak']
+    condition: Condition | None = None
 
 
 SectionItem = Annotated[Question | PageBreak, Field(discriminator='type')]
@@ -47,6 +75,7 @@ SectionItem = Annotated[Question | PageBreak, Field(discriminator='type')]
 class Category(BaseModel):
     model_config = ConfigDict(extra='forbid')
     type: Literal['category']
+    condition: Condition | None = None
     title: str = Field(min_length=1, max_length=200)
     questions: list[SectionItem] = Field(min_length=1, max_length=300)
 
@@ -75,24 +104,49 @@ class Poll(BaseModel):
     def pages(self):
         pages = []
 
-        def append_section(items, title=None):
+        def append_section(items, title=None, condition=None):
+            section_pages = []
             ids = []
+            leading_gates = []
+
+            def flush():
+                nonlocal ids
+                if not ids:
+                    return
+                page = {'title': title, 'question_ids': ids}
+                if condition is not None:
+                    page['condition'] = condition.model_dump()
+                if leading_gates:
+                    page['gates'] = leading_gates.copy()
+                    leading_gates.clear()
+                section_pages.append(page)
+                ids = []
+
             for item in items:
                 if isinstance(item, PageBreak):
-                    if ids:
-                        pages.append({'title': title, 'question_ids': ids})
-                        ids = []
+                    flush()
+                    if item.condition is not None:
+                        gate = item.condition.model_dump()
+                        if section_pages:
+                            section_pages[-1].setdefault('exit_gates', []).append(gate)
+                        else:
+                            leading_gates.append(gate)
                 else:
                     ids.append(item.id)
-            if ids:
-                pages.append({'title': title, 'question_ids': ids})
+            flush()
+            if leading_gates:
+                # A gate-only top-level section must remain unconditional even
+                # when either neighboring category is skipped.
+                section_pages.append({'title': title, 'question_ids': [],
+                                      'exit_gates': leading_gates})
+            pages.extend(section_pages)
 
         section = []
         for item in self.questions:
             if isinstance(item, Category):
                 append_section(section)
                 section = []
-                append_section(item.questions, item.title)
+                append_section(item.questions, item.title, item.condition)
             else:
                 section.append(item)
         append_section(section)
@@ -109,6 +163,29 @@ class Poll(BaseModel):
             raise ValueError('Poll must contain between 1 and 100 questions')
         if len({q.id for q in questions}) != len(questions):
             raise ValueError('Duplicate question IDs')
+        earlier = {}
+
+        def check_condition(condition):
+            if condition is None:
+                return
+            question = earlier.get(condition.question_id)
+            if question is None:
+                raise ValueError('Condition must reference an earlier question')
+            if question.type == 'text':
+                raise ValueError('Conditions cannot reference text questions')
+            if set(condition.option_labels) - {o.label for o in question.options}:
+                raise ValueError('Unknown condition option label')
+
+        for item in self.questions:
+            if isinstance(item, Category):
+                check_condition(item.condition)
+                children = item.questions
+            else:
+                children = [item]
+            for child in children:
+                check_condition(child.condition)
+                if isinstance(child, Question):
+                    earlier[child.id] = child
         return self
 
 
@@ -126,6 +203,11 @@ class Ballot(BaseModel):
 class PublishPoll(BaseModel):
     model_config = ConfigDict(extra='forbid')
     config: Poll
+
+
+class SelectPoll(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    poll_id: str | None
 
 
 def now():
@@ -216,21 +298,68 @@ def create_app():
         return 'pending' if current < poll.starts_at else 'ended' if current >= poll.ends_at else 'open'
 
     @app.get('/api/management/poll')
-    def management_poll(identity=Depends(admin)):
+    def management_poll(poll_id: str | None = None, identity=Depends(admin)):
         with db() as conn:
-            poll = load_poll(conn)
-        return poll.model_dump(mode='json') if poll else None
+            poll = load_poll(conn) if poll_id is None else poll_by_id(conn, poll_id)
+        return poll.model_dump(mode='json', exclude_none=True, exclude_unset=True) if poll else None
 
-    @app.post('/api/management/poll')
-    def publish_poll(body: PublishPoll, identity=Depends(admin)):
-        poll = body.config
+    def poll_by_id(conn, poll_id):
+        row = conn.execute('SELECT config FROM polls WHERE id=?', (poll_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, '投票不存在')
+        return Poll.model_validate_json(row['config'])
+
+    @app.get('/api/management/polls')
+    def management_polls(identity=Depends(admin)):
+        with db() as conn:
+            conn.execute('BEGIN')
+            active = conn.execute('SELECT poll_id FROM active_poll WHERE singleton=1').fetchone()
+            rows = conn.execute('''SELECT polls.config, COUNT(ballots.player_key) AS ballot_count
+                FROM polls LEFT JOIN ballots ON polls.id=ballots.poll_id
+                GROUP BY polls.id ORDER BY polls.rowid''').fetchall()
+        polls = []
+        for row in rows:
+            poll = Poll.model_validate_json(row['config'])
+            polls.append({'id': poll.id, 'title': poll.title,
+                          'starts_at': poll.starts_at.isoformat(), 'ends_at': poll.ends_at.isoformat(),
+                          'question_count': len(poll.flat_questions()), 'ballot_count': row['ballot_count']})
+        return {'active_poll_id': active['poll_id'] if active else None, 'polls': polls}
+
+    @app.get('/api/management/polls/{poll_id}')
+    def management_poll_by_id(poll_id: str, identity=Depends(admin)):
+        with db() as conn:
+            poll = poll_by_id(conn, poll_id)
+        return poll.model_dump(mode='json', exclude_none=True, exclude_unset=True)
+
+    def save_poll(poll, activate):
         try:
             with db() as conn:
                 conn.execute('BEGIN IMMEDIATE')
-                conn.execute('INSERT INTO polls VALUES (?, ?)', (poll.id, poll.model_dump_json()))
-                conn.execute('INSERT INTO active_poll VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET poll_id=excluded.poll_id', (poll.id,))
+                conn.execute('INSERT INTO polls VALUES (?, ?)',
+                             (poll.id, poll.model_dump_json(exclude_none=True, exclude_unset=True)))
+                if activate:
+                    conn.execute('INSERT INTO active_poll VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET poll_id=excluded.poll_id', (poll.id,))
         except sqlite3.IntegrityError:
             raise HTTPException(409, '投票 ID 已存在，请使用新的 ID')
+        return {'ok': True}
+
+    @app.post('/api/management/poll')
+    def publish_poll(body: PublishPoll, identity=Depends(admin)):
+        return save_poll(body.config, activate=True)
+
+    @app.post('/api/management/polls')
+    def create_poll(body: PublishPoll, identity=Depends(admin)):
+        return save_poll(body.config, activate=False)
+
+    @app.post('/api/management/active-poll')
+    def select_poll(body: SelectPoll, identity=Depends(admin)):
+        with db() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if body.poll_id is None:
+                conn.execute('DELETE FROM active_poll WHERE singleton=1')
+            else:
+                poll_by_id(conn, body.poll_id)
+                conn.execute('INSERT INTO active_poll VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET poll_id=excluded.poll_id', (body.poll_id,))
         return {'ok': True}
 
     @app.post('/api/login')
@@ -274,7 +403,7 @@ def create_app():
         current = now()
         phase = status(poll, current)
         editable_at = datetime.fromisoformat(ballot['submitted_at']) + timedelta(minutes=10) if ballot else None
-        return {**poll.model_dump(mode='json'),
+        return {**poll.model_dump(mode='json', exclude_none=True, exclude_unset=True),
                 'questions': [q.model_dump(mode='json') for q in poll.flat_questions()],
                 'pages': poll.pages(), 'status': phase, 'submitted': ballot is not None,
                 'answers': json.loads(ballot['answers']) if ballot else {},
@@ -303,13 +432,50 @@ def create_app():
             if body.answers.keys() - {q.id for q in questions}:
                 raise HTTPException(422, '题目无效')
             answers = {}
-            for question in questions:
-                chosen = body.answers.get(question.id, [])
-                if (question.required and not chosen) or (question.type == 'single' and len(chosen) > 1):
-                    raise HTTPException(422, '请完成必填题并检查选择数量')
-                if len(set(chosen)) != len(chosen) or set(chosen) - {o.id for o in question.options}:
-                    raise HTTPException(422, '选项无效')
-                answers[question.id] = chosen
+            by_id = {q.id: q for q in questions}
+
+            def matches(condition):
+                question = by_id[condition['question_id']]
+                chosen = answers.get(question.id, [])
+                return any(o.id in chosen and o.label in condition['option_labels']
+                           for o in question.options)
+
+            def enforce(gates):
+                if not all(matches(gate) for gate in gates):
+                    raise HTTPException(422, '不满足翻页条件')
+
+            for page in poll.pages():
+                if 'condition' in page and not matches(page['condition']):
+                    continue
+                enforce(page.get('gates', []))
+                for question_id in page['question_ids']:
+                    question = by_id[question_id]
+                    if question.hidden and (question.condition is None or
+                                            not matches(question.condition.model_dump())):
+                        continue
+                    chosen = body.answers.get(question.id, [])
+                    if question.type == 'text':
+                        if len(chosen) > 1 or any(len(text) > 2000 for text in chosen):
+                            raise HTTPException(422, f'「{question.title}」：文本答案过长或数量无效')
+                        if chosen and not chosen[0].strip():
+                            chosen = []
+                        if question.required and not chosen:
+                            raise HTTPException(422, f'请完成必填题「{question.title}」')
+                        if chosen and question.pattern is not None:
+                            try:
+                                matched = regex.fullmatch(question.pattern, chosen[0], timeout=0.02)
+                            except TimeoutError:
+                                raise HTTPException(422, f'「{question.title}」：格式匹配超时，请联系管理员')
+                            if matched is None:
+                                raise HTTPException(422, f'「{question.title}」：填写内容不符合格式 {question.pattern}')
+                        answers[question.id] = chosen
+                        continue
+                    if (question.required and not chosen) or (question.type == 'single' and len(chosen) > 1):
+                        raise HTTPException(422, '请完成必填题并检查选择数量')
+                    if len(set(chosen)) != len(chosen) or set(chosen) - {o.id for o in question.options}:
+                        raise HTTPException(422, '选项无效')
+                    answers[question.id] = chosen
+                enforce(page.get('exit_gates', []))
             conn.execute('''INSERT INTO ballots VALUES (?, ?, ?, ?, ?)
                             ON CONFLICT(poll_id, player_key) DO UPDATE SET
                             answers=excluded.answers, submitted_at=excluded.submitted_at''', (
@@ -327,9 +493,26 @@ def create_app():
             if not identity['is_admin'] and status(poll) != 'ended':
                 raise HTTPException(403, '无权查看结果')
             rows = conn.execute('SELECT player_id, answers FROM ballots WHERE poll_id=? ORDER BY player_key', (poll.id,)).fetchall()
+        return build_results(poll, rows)
+
+    @app.get('/api/management/results')
+    @app.get('/api/management/polls/{poll_id}/results')
+    def management_results(poll_id: str, identity=Depends(admin)):
+        with db() as conn:
+            conn.execute('BEGIN')
+            poll = poll_by_id(conn, poll_id)
+            rows = conn.execute('SELECT player_id, answers FROM ballots WHERE poll_id=? ORDER BY player_key', (poll.id,)).fetchall()
+        return build_results(poll, rows)
+
+    def build_results(poll, rows):
         ballots = [(row['player_id'], json.loads(row['answers'])) for row in rows]
         questions = []
         for q in poll.flat_questions():
+            if q.type == 'text':
+                responses = [{'player_id': player, 'text': answers[q.id][0]}
+                             for player, answers in ballots if answers.get(q.id)]
+                questions.append({**q.model_dump(), 'total_votes': len(responses), 'responses': responses})
+                continue
             options = []
             for o in q.options:
                 voters = [player for player, answers in ballots if o.id in answers.get(q.id, [])]
