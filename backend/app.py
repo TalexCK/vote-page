@@ -8,7 +8,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -36,12 +36,67 @@ class Question(BaseModel):
         return self
 
 
+class PageBreak(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['pagebreak']
+
+
+SectionItem = Annotated[Question | PageBreak, Field(discriminator='type')]
+
+
+class Category(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['category']
+    title: str = Field(min_length=1, max_length=200)
+    questions: list[SectionItem] = Field(min_length=1, max_length=300)
+
+    @model_validator(mode='after')
+    def has_questions(self):
+        if not any(isinstance(item, Question) for item in self.questions):
+            raise ValueError('Category must contain at least one question')
+        return self
+
+
+PollItem = Annotated[Question | PageBreak | Category, Field(discriminator='type')]
+
+
 class Poll(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=200)
     starts_at: datetime
     ends_at: datetime
-    questions: list[Question] = Field(min_length=1, max_length=100)
+    questions: list[PollItem] = Field(min_length=1, max_length=300)
+
+    def flat_questions(self):
+        return [q for item in self.questions
+                for q in (item.questions if isinstance(item, Category) else [item])
+                if isinstance(q, Question)]
+
+    def pages(self):
+        pages = []
+
+        def append_section(items, title=None):
+            ids = []
+            for item in items:
+                if isinstance(item, PageBreak):
+                    if ids:
+                        pages.append({'title': title, 'question_ids': ids})
+                        ids = []
+                else:
+                    ids.append(item.id)
+            if ids:
+                pages.append({'title': title, 'question_ids': ids})
+
+        section = []
+        for item in self.questions:
+            if isinstance(item, Category):
+                append_section(section)
+                section = []
+                append_section(item.questions, item.title)
+            else:
+                section.append(item)
+        append_section(section)
+        return pages
 
     @model_validator(mode='after')
     def valid(self):
@@ -49,7 +104,10 @@ class Poll(BaseModel):
             raise ValueError('Times must include timezone')
         if self.starts_at >= self.ends_at:
             raise ValueError('ends_at must be after starts_at')
-        if len({q.id for q in self.questions}) != len(self.questions):
+        questions = self.flat_questions()
+        if not 1 <= len(questions) <= 100:
+            raise ValueError('Poll must contain between 1 and 100 questions')
+        if len({q.id for q in questions}) != len(questions):
             raise ValueError('Duplicate question IDs')
         return self
 
@@ -216,7 +274,9 @@ def create_app():
         current = now()
         phase = status(poll, current)
         editable_at = datetime.fromisoformat(ballot['submitted_at']) + timedelta(minutes=10) if ballot else None
-        return {**poll.model_dump(mode='json'), 'status': phase, 'submitted': ballot is not None,
+        return {**poll.model_dump(mode='json'),
+                'questions': [q.model_dump(mode='json') for q in poll.flat_questions()],
+                'pages': poll.pages(), 'status': phase, 'submitted': ballot is not None,
                 'answers': json.loads(ballot['answers']) if ballot else {},
                 'submitted_at': ballot['submitted_at'] if ballot else None,
                 'editable_at': editable_at.isoformat() if editable_at else None,
@@ -239,10 +299,11 @@ def create_app():
                                     (poll.id, player_key)).fetchone()
             if previous and current < datetime.fromisoformat(previous['submitted_at']) + timedelta(minutes=10):
                 raise HTTPException(409, '每次提交后需等待 10 分钟才能修改')
-            if body.answers.keys() - {q.id for q in poll.questions}:
+            questions = poll.flat_questions()
+            if body.answers.keys() - {q.id for q in questions}:
                 raise HTTPException(422, '题目无效')
             answers = {}
-            for question in poll.questions:
+            for question in questions:
                 chosen = body.answers.get(question.id, [])
                 if (question.required and not chosen) or (question.type == 'single' and len(chosen) > 1):
                     raise HTTPException(422, '请完成必填题并检查选择数量')
@@ -268,13 +329,13 @@ def create_app():
             rows = conn.execute('SELECT player_id, answers FROM ballots WHERE poll_id=? ORDER BY player_key', (poll.id,)).fetchall()
         ballots = [(row['player_id'], json.loads(row['answers'])) for row in rows]
         questions = []
-        for q in poll.questions:
+        for q in poll.flat_questions():
             options = []
             for o in q.options:
                 voters = [player for player, answers in ballots if o.id in answers.get(q.id, [])]
                 options.append({**o.model_dump(), 'count': len(voters), 'voters': voters})
             questions.append({**q.model_dump(), 'total_votes': sum(bool(a.get(q.id)) for _, a in ballots), 'options': options})
-        return {'id': poll.id, 'title': poll.title, 'questions': questions}
+        return {'id': poll.id, 'title': poll.title, 'questions': questions, 'pages': poll.pages()}
 
     static = Path(os.getenv('STATIC_DIR', 'frontend/dist')).resolve()
 

@@ -189,6 +189,56 @@ def test_concurrent_edits_and_restart_keep_cooldown(setup, monkeypatch):
         assert vote(other, {'q1': ['a']}).status_code == 409
 
 
+def test_pagebreak_categories_and_grouped_ballots(setup):
+    client, secret, _, poll = setup
+    question = poll['questions'][0]
+    q = lambda number: {**question, 'id': f'q{number}'}
+    pagebreak = {'type': 'pagebreak'}
+    poll['questions'] = [
+        pagebreak, q(1), pagebreak, pagebreak, q(2),
+        {'type': 'category', 'title': '分类 A', 'questions': [q(3), q(4), pagebreak, q(5)]},
+        {'type': 'category', 'title': '分类 B', 'questions': [q(6)]}, q(7), pagebreak,
+    ]
+    publish(client, secret, poll)
+    loaded = client.get('/api/poll').json()
+    expected_pages = [
+        {'title': None, 'question_ids': ['q1']},
+        {'title': None, 'question_ids': ['q2']},
+        {'title': '分类 A', 'question_ids': ['q3', 'q4']},
+        {'title': '分类 A', 'question_ids': ['q5']},
+        {'title': '分类 B', 'question_ids': ['q6']},
+        {'title': None, 'question_ids': ['q7']},
+    ]
+    assert loaded['pages'] == expected_pages
+    assert [item['id'] for item in loaded['questions']] == [f'q{i}' for i in range(1, 8)]
+    answers = {f'q{i}': ['a'] for i in range(1, 8)}
+    assert vote(client, {key: value for key, value in answers.items() if key != 'q4'}).status_code == 422
+    assert vote(client, {**answers, 'category': ['a']}).status_code == 422
+    assert vote(client, answers).status_code == 200
+    assert client.get('/api/results').status_code == 403
+    login(client, secret, 'Admin')
+    assert client.get('/api/management/poll').json()['questions'] == poll['questions']
+    results = client.get('/api/results').json()
+    assert results['pages'] == expected_pages
+    assert all(question['total_votes'] == 1 for question in results['questions'])
+    assert all(question['options'][0]['voters'] == ['Player'] for question in results['questions'])
+
+
+def test_category_configuration_validation_and_legacy_layout(setup):
+    client, secret, _, poll = setup
+    login(client, secret, 'Admin')
+    question = poll['questions'][0]
+    for items in (
+        [{'type': 'pagebreak'}],
+        [{'type': 'category', 'title': '空分类', 'questions': [{'type': 'pagebreak'}]}],
+        [question, {'type': 'category', 'title': '重复 ID', 'questions': [question]}],
+        [{'type': 'category', 'title': '', 'questions': [question]}],
+    ):
+        assert client.post('/api/management/poll', json={'config': {**poll, 'questions': items}}).status_code == 422
+    assert client.post('/api/management/poll', json={'config': poll}).status_code == 200
+    assert client.get('/api/poll').json()['pages'] == [{'title': None, 'question_ids': ['q1', 'q2']}]
+
+
 def test_login_rate_limit_and_csrf(setup):
     client, _, _, _ = setup
     assert client.post('/api/login', data={'minecraft_id': 'Player', 'secret': 'bad'}).status_code == 415

@@ -72,6 +72,6 @@ export function PollPage({ management, onUnauthorized }: { management: boolean; 
       </div>
     </>}
     {error && <div role="alert" className="mb-8 flex items-center justify-between gap-4 border-y py-4"><p className="text-sm">{error}</p><Button variant="ghost" size="sm" onClick={refresh}><RefreshCw />重试</Button></div>}
-    {poll && (showResults ? results && results.id === poll.id ? <Results results={results} /> : !error && <p role="status" className="border-t py-10 text-sm text-muted-foreground">正在加载结果</p> : <VoteForm key={poll.id} poll={poll} onRefresh={refresh} onUnauthorized={onUnauthorized} />)}
+    {poll && (showResults ? results && results.id === poll.id ? <Results key={poll.id} results={results} /> : !error && <p role="status" className="border-t py-10 text-sm text-muted-foreground">正在加载结果</p> : <VoteForm key={poll.id} poll={poll} onRefresh={refresh} onUnauthorized={onUnauthorized} />)}
   </main>
 }

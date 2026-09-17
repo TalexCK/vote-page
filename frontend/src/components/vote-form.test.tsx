@@ -67,3 +67,46 @@ it('冷却冲突显示服务端错误并刷新，不视为成功', async () => {
   expect(refresh).toHaveBeenCalledOnce()
   expect(screen.getByRole('button', { name: '修改答案' })).toBeDisabled()
 })
+
+const paged: Poll = {
+  ...poll, submitted: false, submitted_at: null, editable_at: null, answers: {},
+  questions: [...poll.questions, { ...poll.questions[0], id: 'q2', title: '第二题', options: [{ id: 'c', label: 'C' }] }],
+  pages: [{ title: '分类一', question_ids: ['q'] }, { title: '分类二', question_ids: ['q2'] }],
+}
+
+it('分页保留选择，全局必填漏选跳回对应页，统一提交所有答案', async () => {
+  const user = userEvent.setup()
+  render(form(paged))
+  expect(screen.getByText('分类一')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '提交全部' })).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.queryByRole('radio', { name: 'A' })).not.toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'C' }))
+  await user.click(screen.getByRole('button', { name: '提交全部' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('第 1 页的第 1 题「选择」（必填）')
+  expect(screen.getByText('分类一')).toBeInTheDocument()
+  expect(mockApi).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('radio', { name: 'B' }))
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.getByRole('radio', { name: 'C' })).toHaveAttribute('aria-checked', 'true')
+  await user.click(screen.getByRole('button', { name: '上一页' }))
+  expect(screen.getByRole('radio', { name: 'B' })).toHaveAttribute('aria-checked', 'true')
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  await user.click(screen.getByRole('button', { name: '提交全部' }))
+  mockApi.mockResolvedValue({ ok: true, submitted_at: poll.submitted_at, editable_at: poll.editable_at })
+  await user.click(screen.getByRole('button', { name: '确认提交' }))
+  expect(mockApi).toHaveBeenCalledWith('/vote', expect.objectContaining({ body: JSON.stringify({ poll_id: 'one', answers: { q: ['b'], q2: ['c'] } }) }))
+})
+
+it('修改回填所有页，新投票 key 重置页和答案', async () => {
+  const user = userEvent.setup()
+  const value = { ...paged, submitted: true, submitted_at: poll.submitted_at, can_edit: true, answers: { q: ['b'], q2: ['c'] } }
+  const view = render(<VoteForm key={value.id} poll={value} onRefresh={refresh} onUnauthorized={vi.fn()} />)
+  await user.click(screen.getByRole('button', { name: '修改答案' }))
+  expect(screen.getByRole('radio', { name: 'B' })).toHaveAttribute('aria-checked', 'true')
+  await user.click(screen.getByRole('button', { name: '下一页' }))
+  expect(screen.getByRole('radio', { name: 'C' })).toHaveAttribute('aria-checked', 'true')
+  view.rerender(<VoteForm key="new" poll={{ ...paged, id: 'new' }} onRefresh={refresh} onUnauthorized={vi.fn()} />)
+  expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument()
+  expect(screen.getByRole('radio', { name: 'B' })).toHaveAttribute('aria-checked', 'false')
+})

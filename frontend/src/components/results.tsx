@@ -1,9 +1,17 @@
+import { useState } from 'react'
+import { questionPages } from '@/lib/pages'
+import { PageNavigation } from './page-navigation'
 import type { Results as ResultsData } from '@/lib/api'
 import { QuestionHeading } from './question-heading'
 
 export function Results({ results }: { results: ResultsData }) {
-  return <div className="divide-y border-t">
-    {results.questions.map((question, index) => <section key={question.id} className="py-9 sm:py-12" aria-labelledby={`question-${question.id}`}>
+  const pages = questionPages(results.questions, results.pages)
+  const [page, setPage] = useState(0)
+  const current = Math.min(page, pages.length - 1)
+  return <>
+    <PageNavigation pages={pages} current={current} onChange={setPage} />
+    <div className="divide-y border-t">
+    {results.questions.map((question, index) => pages[current].question_ids.includes(question.id) && <section key={question.id} className="py-9 sm:py-12" aria-labelledby={`question-${question.id}`}>
       <QuestionHeading question={question} index={index} />
       <div className="sm:ml-10">
         <p className="mb-5 text-xs text-muted-foreground">本题总票数 <span className="ml-2 font-mono text-base text-foreground">{question.total_votes}</span></p>
@@ -22,5 +30,6 @@ export function Results({ results }: { results: ResultsData }) {
       </div>
     </section>)}
     {!results.questions.length && <p className="py-12 text-sm text-muted-foreground">暂无题目</p>}
-  </div>
+    </div>
+  </>
 }

@@ -32,6 +32,7 @@ export interface Question {
   proposer: string
   options: { id: string; label: string }[]
 }
+export interface PollPage { title: string | null; question_ids: string[] }
 export interface Poll {
   id: string
   title: string
@@ -45,10 +46,12 @@ export interface Poll {
   can_edit: boolean
   server_time: string
   questions: Question[]
+  pages?: PollPage[]
 }
 export interface Results {
   id: string
   title: string
+  pages?: PollPage[]
   questions: (Omit<Question, 'options'> & {
     total_votes: number
     options: { id: string; label: string; count: number; voters: string[] }[]

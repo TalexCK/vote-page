@@ -6,11 +6,17 @@ import { Checkbox } from './ui/checkbox'
 import { RadioGroup, RadioGroupItem } from './ui/radio-group'
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from './ui/alert-dialog'
 import { QuestionHeading } from './question-heading'
+import { PageNavigation } from './page-navigation'
+import { questionPage, questionPages } from '@/lib/pages'
 
 export function VoteForm({ poll, onRefresh, onUnauthorized }: { poll: Poll; onRefresh: () => void; onUnauthorized: () => void }) {
   const request = useRef<AbortController | null>(null)
   useEffect(() => () => request.current?.abort(), [])
   const [answers, setAnswers] = useState<Answers>(poll.answers)
+  const pages = questionPages(poll.questions, poll.pages)
+  const [page, setPage] = useState(0)
+  const current = Math.min(page, pages.length - 1)
+  const lastPage = current === pages.length - 1
   // Keep a successful submission locked even before the next poll response arrives.
   const [receipt, setReceipt] = useState<(VoteResponse & { answers: Answers }) | null>(null)
   const awaitingPoll = receipt !== null && (!poll.submitted_at || Date.parse(poll.submitted_at) < Date.parse(receipt.submitted_at))
@@ -63,14 +69,28 @@ export function VoteForm({ poll, onRefresh, onUnauthorized }: { poll: Poll; onRe
         <p className="mt-2 text-xs text-muted-foreground">投票结束后显示结果</p>
       </div>
       {error && <p role="alert" className="mt-4 text-sm">{error}</p>}
-      <Button className="mt-6" disabled={!canEdit || busy || blockedPoll === poll} onClick={() => { setAnswers(saved.answers); setEditingAt(saved.submitted_at); setError('') }}>修改答案<ArrowUpRight /></Button>
+      <Button className="mt-6" disabled={!canEdit || busy || blockedPoll === poll} onClick={() => { setAnswers(saved.answers); setEditingAt(saved.submitted_at); setPage(0); setError('') }}>修改答案<ArrowUpRight /></Button>
     </div>
   </div>
   return <>
     {poll.status === 'pending' && <p className="mb-8 border-l-2 border-foreground pl-4 text-sm">投票尚未开始</p>}
-    <form onSubmit={event => { event.preventDefault(); if (!disabled && !missing.length) setConfirm(true) }}>
+    <form onSubmit={event => {
+      event.preventDefault()
+      if (disabled) return
+      if (!lastPage) { setPage(current + 1); return }
+      if (missing.length) {
+        const first = missing[0]
+        const target = questionPage(pages, first.id)
+        setPage(target)
+        setError(`请完成第 ${target + 1} 页的第 ${poll.questions.indexOf(first) + 1} 题「${first.title}」（必填），再提交全部答案`)
+        return
+      }
+      setConfirm(true)
+    }}>
+      <PageNavigation pages={pages} current={current} onChange={setPage} disabled={busy} />
+      {error && <p role="alert" className="mb-5 border-l-2 border-foreground pl-3 text-sm">{error}</p>}
       <div className="divide-y border-t">
-        {poll.questions.map((question, index) => <section key={question.id} className="py-9 sm:py-12" aria-labelledby={`question-${question.id}`}>
+        {poll.questions.map((question, index) => pages[current].question_ids.includes(question.id) && <section key={question.id} className="py-9 sm:py-12" aria-labelledby={`question-${question.id}`}>
           <QuestionHeading question={question} index={index} />
           <div className="sm:ml-10">
             {question.type === 'single' ? <RadioGroup aria-labelledby={`question-${question.id}`} value={cleanAnswers[question.id]?.[0] ?? ''} onValueChange={value => setAnswer(question.id, [value])} disabled={disabled}>
@@ -83,10 +103,9 @@ export function VoteForm({ poll, onRefresh, onUnauthorized }: { poll: Poll; onRe
         </section>)}
       </div>
       {!poll.questions.length && <p className="py-10 text-sm text-muted-foreground">暂无题目</p>}
-      {error && <p role="alert" className="mb-5 border-l-2 border-foreground pl-3 text-sm">{error}</p>}
       <div className="sticky bottom-0 -mx-2 flex flex-wrap items-center justify-between gap-4 border-t bg-background/95 px-2 py-5 backdrop-blur-md">
         <div><p className="text-sm">已选 <span className="font-mono">{answered} / {poll.questions.length}</span></p><p className="mt-1.5 text-xs text-muted-foreground">{missing.length ? `还有 ${missing.length} 道必填题未选` : '每次提交后需等待 10 分钟才能修改'}</p></div>
-        <Button type="submit" disabled={disabled || !!missing.length || !poll.questions.length}>{busy ? <Loader2 className="animate-spin" /> : null}{busy ? '提交中' : editing ? '提交修改' : '提交全部'}{!busy && <ArrowUpRight />}</Button>
+        {lastPage ? <Button type="submit" disabled={disabled || !poll.questions.length}>{busy ? <Loader2 className="animate-spin" /> : null}{busy ? '提交中' : editing ? '提交修改' : '提交全部'}{!busy && <ArrowUpRight />}</Button> : <Button type="button" disabled={busy} onClick={() => setPage(current + 1)}>继续下一页<ArrowUpRight /></Button>}
       </div>
     </form>
     <AlertDialog open={confirm} onOpenChange={open => { if (!busy) setConfirm(open) }}>

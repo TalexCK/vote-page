@@ -58,6 +58,37 @@ docker run -d --name mua-vote --restart unless-stopped \
 }
 ```
 
+### 分页与分类
+
+`questions` 数组可混合题目、分页标签和分类块；旧格式仍兼容：
+
+```json
+[
+  {"id":"q1","title":"第一题","type":"single","required":true,"proposer":"PlayerOne","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]},
+  {"type":"pagebreak"},
+  {"id":"q2","title":"第二题","type":"single","required":false,"proposer":"PlayerOne","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]},
+  {
+    "type":"category",
+    "title":"活动安排",
+    "questions":[
+      {"id":"q3","title":"活动时间","type":"multiple","required":true,"proposer":"PlayerTwo","options":[{"id":"sat","label":"星期六"},{"id":"sun","label":"星期日"}]},
+      {"id":"q4","title":"活动地点","type":"single","required":true,"proposer":"PlayerTwo","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}
+    ]
+  },
+  {"id":"q5","title":"其他建议","type":"single","required":false,"proposer":"PlayerOne","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}
+]
+```
+
+将上面的数组填入配置的 `questions`。本例为四页：q1、q2、分类「活动安排」（q3/q4）、q5。
+
+- `{"type":"pagebreak"}` 手动换页；连续、开头和末尾的分页标签不产生空白页。
+- `{"type":"category","title":"分类名","questions":[...]}` 在分类前后自动分页，同一分类内的题目默认同页；内部仍可插入 `pagebreak`，各页保留分类标题。不支持分类嵌套。
+- 分类必须包含真实题目；全场题目 ID 唯一，所有分类合计最多 100 题。
+- 翻页不会提交或清空选择；最后统一提交全部答案，必填校验覆盖所有页。修改答案和结果展示采用同样的分页结构。
+- 玩家接口的 `questions` 保持扁平题目列表，新增 `pages`（`title`、`question_ids`）描述布局；管理配置接口返回原始分类结构。
+
+### 题目与提交规则
+
 - `type` 为 `single`（单选）或 `multiple`（多选）；`required` 控制必填。
 - `proposer` 为提出者的 MUA Minecraft ID，始终展示。
 - 时间必须包含时区，开始时间含边界、结束时间不含边界；以服务器时间为准。
